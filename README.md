@@ -1,3 +1,4 @@
+
 # Text encryption transfer
 
 Encrypts files that arrive in `Source/` with PGP so that only SBI can read them, and puts the encrypted copy in `Sink/`. The original is then moved to `Source/archive/`.
@@ -18,7 +19,7 @@ The pipeline only ever holds SBI's **public** key. Only SBI's private key can de
 - Nothing in Sink or the archive is ever overwritten. If a name is already taken, the file stays in Source and an error is logged.
 - A file that fails stays in Source and is retried after `RETRY_SECONDS`, or as soon as it changes.
 - Only one copy of the pipeline can run on the same folders at a time.
-- At startup every key is checked: missing, expired or revoked keys stop the pipeline, keys expiring within 30 days are warned about, and keys that would produce files only GnuPG can decrypt are refused (see [SBI's key](#sbis-key)).
+- At startup every key is checked: missing, expired or revoked keys stop the pipeline, keys expiring within 30 days are warned about, and keys that would produce files only GnuPG can decrypt are refused (see [SBI&#39;s key](#sbis-key)).
 
 ## Setup
 
@@ -100,11 +101,11 @@ python scripts/create_recipient_key.py --name "SBI - <company> file exchange" --
 
 It asks for a passphrase and writes three files to `key_handover/`:
 
-| File | What to do with it |
-|---|---|
-| `public_key.asc` | Keep. Import it into the pipeline as shown above; it is the only file that goes to the server. |
-| `PRIVATE_KEY.asc` | Give to SBI only. It is protected by the passphrase. |
-| `revocation_certificate.asc` | Give to SBI. It lets them cancel the key if it ever leaks. |
+| File                           | What to do with it                                                                             |
+| ------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `public_key.asc`             | Keep. Import it into the pipeline as shown above; it is the only file that goes to the server. |
+| `PRIVATE_KEY.asc`            | Give to SBI only. It is protected by the passphrase.                                           |
+| `revocation_certificate.asc` | Give to SBI. It lets them cancel the key if it ever leaks.                                     |
 
 1. Import `public_key.asc` into the pipeline.
 2. Send `PRIVATE_KEY.asc` and `revocation_certificate.asc` through one channel (for example SBI's secure upload, or in person), and the passphrase through a different one (for example a phone call to a known contact).
@@ -119,3 +120,6 @@ python -m unittest
 ```
 
 The tests use real GnuPG with throwaway keys and temporary folders.
+
+
+ERROR   Recipient key FEE036BDD7135A10D2BEC2BCCA070912F6DF0F17 is not in the pipeline's keyring. Import it with: python scripts/import_public_key.py <public key file></public>
