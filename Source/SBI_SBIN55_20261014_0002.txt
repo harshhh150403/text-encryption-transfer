@@ -1,1 +1,3 @@
-DCR,8.50,13/10/2026,SBIN55,IC Anand Rathi Global Finance Limited,,30095939309,SBIN000426,49,10627,INR,State Bank of India,,E
+this is a demo txt file.
+
+Good Morning!!

@@ -1,0 +1,6 @@
+# PGP encryption (thin wrapper around the GnuPG `gpg` binary, which must be installed separately)
+python-gnupg==0.5.7
+# Load pipeline settings (paths, recipient key) from a .env file
+python-dotenv==1.2.4
+# Watch the Source folder and trigger the pipeline when a new file arrives
+watchdog==6.0.0
