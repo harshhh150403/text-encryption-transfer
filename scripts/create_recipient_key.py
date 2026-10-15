@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so the pipeline package can be imported
@@ -70,9 +71,7 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 1
     finally:
-        if shutil.which("gpgconf"):  # stop the temporary keyring's background agent before deleting it
-            subprocess.run(["gpgconf", "--homedir", str(keyring / "k"), "--kill", "gpg-agent"], capture_output=True)
-        shutil.rmtree(keyring, ignore_errors=True)
+        _delete_temporary_keyring(keyring)
 
     grouped = " ".join(fingerprint[i : i + 4] for i in range(0, len(fingerprint), 4))
     print(f"\nFingerprint: {grouped}")
@@ -86,6 +85,19 @@ def main() -> int:
     print("  2. Ask the recipient to read the fingerprint back to you after importing the key.")
     print("  3. Import public_key.asc into the pipeline, then delete this folder.")
     return 0
+
+
+def _delete_temporary_keyring(keyring: Path) -> None:
+    """Delete the temporary keyring, which holds a copy of the private key."""
+    if shutil.which("gpgconf"):  # stop its background agent first, or Windows may keep its files locked
+        subprocess.run(["gpgconf", "--homedir", str(keyring / "k"), "--kill", "gpg-agent"], capture_output=True)
+    for _ in range(5):
+        shutil.rmtree(keyring, ignore_errors=True)
+        if not keyring.exists():
+            return
+        time.sleep(1)
+    print(f"\nWARNING: could not delete {keyring}, which holds a copy of the private key. Delete it by hand.",
+          file=sys.stderr)
 
 
 def _ask_passphrase() -> str:
