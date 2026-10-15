@@ -4,11 +4,23 @@
 # Local settings and secrets
 .env
 
-# GnuPG keyring and key material - never commit these
+# Keyrings and key files: never commit these
 gnupg_home/
-keys/*.asc
-keys/*.gpg
-keys/*.key
+test_keys/
+key_handover/
+*.asc
+*.gpg
+*.key
+*.rev
+
+# Data: never commit real files (the sample file in Source is the only exception)
+Source/*
+!Source/SBI_SBIN55_20261014_0002.txt
+Sink/
+*.pgp
+
+# Logs
+logs/
 
 # Python
 __pycache__/

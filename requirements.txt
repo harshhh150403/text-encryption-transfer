@@ -2,5 +2,5 @@
 python-gnupg==0.5.7
 # Load pipeline settings (paths, recipient key) from a .env file
 python-dotenv==1.2.4
-# Watch the Source folder and trigger the pipeline when a new file arrives
-watchdog==6.0.0
+# Make sure only one copy of the pipeline works on the folders at a time (needs Python 3.11+)
+filelock==4.2.0
