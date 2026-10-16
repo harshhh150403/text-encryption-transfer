@@ -6,6 +6,7 @@ computer. The pipeline's own keyring only gets the public key, exactly as it wil
     python scripts/setup_test_keys.py
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ RECIPIENT_KEYRING = TEST_KEYS_DIR / "recipient"
 PUBLIC_KEY_FILE = TEST_KEYS_DIR / "test_recipient_public.asc"
 ENV_FILE = PROJECT_DIR / ".env"
 ENV_EXAMPLE_FILE = PROJECT_DIR / ".env.example"
+SAMPLE_FILE = PROJECT_DIR / "samples" / "SBI_SBIN55_20261014_0002.txt"
 
 
 def main() -> int:
@@ -31,7 +33,8 @@ def main() -> int:
         fingerprint = _test_key(recipient_gpg)
         PUBLIC_KEY_FILE.write_text(recipient_gpg.export_keys(fingerprint), encoding="utf-8")
         import_public_key(open_keyring(settings.gnupg_home, settings.gpg_binary), PUBLIC_KEY_FILE)
-    except (ConfigError, EncryptionError) as exc:
+        settings.source_dir.mkdir(parents=True, exist_ok=True)  # not in git, so missing after a fresh clone
+    except (ConfigError, EncryptionError, OSError) as exc:
         print(exc, file=sys.stderr)
         return 1
 
@@ -43,10 +46,18 @@ def main() -> int:
     else:
         print(f"  {ENV_FILE.name} already lists another recipient. To use the test key, set:")
         print(f"  RECIPIENT_FINGERPRINTS={fingerprint}")
-    print("\nNext:")
+    print("\nNext, drop the sample file into Source, encrypt it, then decrypt it the way SBI will:")
+    print(f"  {'copy' if os.name == 'nt' else 'cp'} {_shown(SAMPLE_FILE)} {_shown(settings.source_dir)}")
     print("  python main.py --once")
-    print("  python scripts/decrypt_file.py Sink/<file name>.pgp")
+    print(f"  python {_shown(PROJECT_DIR / 'scripts' / 'decrypt_file.py')} "
+          f"{_shown(settings.sink_dir / (SAMPLE_FILE.name + '.pgp'))}")
     return 0
+
+
+def _shown(path: Path) -> str:
+    """The path as it would be typed in a terminal opened in the project folder."""
+    text = str(path.relative_to(PROJECT_DIR)) if path.is_relative_to(PROJECT_DIR) else str(path)
+    return f'"{text}"' if " " in text else text
 
 
 def _test_key(gpg: gnupg.GPG) -> str:

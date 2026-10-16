@@ -1,4 +1,3 @@
-
 # Text encryption transfer
 
 Encrypts files that arrive in `Source/` with PGP so that only SBI can read them, and puts the encrypted copy in `Sink/`. The original is then moved to `Source/archive/`.
@@ -54,24 +53,41 @@ Until SBI's key is in place, a throwaway test key pair stands in for SBI. Its pr
 
 ```
 python scripts/setup_test_keys.py
-python main.py --once
-python scripts/decrypt_file.py Sink/SBI_SBIN55_20261014_0002.txt.pgp
 ```
 
-The last command decrypts the file the way SBI will, and checks it against the original in the archive.
-
-To run the same test again, move the original back and delete the encrypted file:
+Then copy the sample file into `Source`, which is what a new file arriving looks like. The sample is kept in `samples/` so the pipeline never moves it; `Source/` and `Sink/` are kept out of git.
 
 ```bat
 :: Windows
-move Source\archive\SBI_SBIN55_20261014_0002.txt Source\
-del Sink\SBI_SBIN55_20261014_0002.txt.pgp
+copy samples\SBI_SBIN55_20261014_0002.txt Source\
 ```
 
 ```bash
 # macOS
-mv Source/archive/SBI_SBIN55_20261014_0002.txt Source/
-rm Sink/SBI_SBIN55_20261014_0002.txt.pgp
+cp samples/SBI_SBIN55_20261014_0002.txt Source/
+```
+
+Encrypt it, then decrypt it the way SBI will:
+
+```
+python main.py --once
+python scripts/decrypt_file.py Sink/SBI_SBIN55_20261014_0002.txt.pgp
+```
+
+The last command also checks the decrypted file against the original in the archive.
+
+To run the same test again, delete the encrypted file and the archived original, then copy the sample in again:
+
+```bat
+:: Windows
+del Sink\SBI_SBIN55_20261014_0002.txt.pgp Source\archive\SBI_SBIN55_20261014_0002.txt
+copy samples\SBI_SBIN55_20261014_0002.txt Source\
+```
+
+```bash
+# macOS
+rm Sink/SBI_SBIN55_20261014_0002.txt.pgp Source/archive/SBI_SBIN55_20261014_0002.txt
+cp samples/SBI_SBIN55_20261014_0002.txt Source/
 ```
 
 ## Running
@@ -120,6 +136,4 @@ python -m unittest
 ```
 
 The tests use real GnuPG with throwaway keys and temporary folders.
-
-
-ERROR   Recipient key FEE036BDD7135A10D2BEC2BCCA070912F6DF0F17 is not in the pipeline's keyring. Import it with: python scripts/import_public_key.py <public key file></public>
+<public key file></public>

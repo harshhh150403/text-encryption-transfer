@@ -13,9 +13,9 @@ key_handover/
 *.key
 *.rev
 
-# Data: never commit real files (the sample file in Source is the only exception)
-Source/*
-!Source/SBI_SBIN55_20261014_0002.txt
+# Data: never commit real files. The pipeline's folders stay out of git entirely;
+# the sample file for testing is in samples/, which the pipeline never touches.
+Source/
 Sink/
 *.pgp
 
