@@ -8,6 +8,7 @@
 gnupg_home/
 test_keys/
 key_handover/
+wheels/
 *.asc
 *.gpg
 *.key
