@@ -1,11 +1,17 @@
-"""Pipeline settings, read from environment variables and the .env file in the project folder."""
+"""Pipeline settings, read from environment variables and the .env file in the project folder.
 
+The encryption and decryption pipelines each read only their own settings, so a mistake in one
+pipeline's settings can't stop the other. Both check that the two pipelines don't share folders.
+"""
+
+import io
+import logging
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
@@ -25,13 +31,25 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
-class Settings:
+class JobSettings:
+    """One pipeline's folders, which files it picks up, and its timing: everything the watcher needs."""
+
     source_dir: Path
-    sink_dir: Path
+    output_dir: Path
     archive_dir: Path
+    file_patterns: tuple[str, ...]
+    stable_seconds: float = 5.0
+    poll_seconds: float = 2.0
+    retry_seconds: float = 300.0
+
+
+@dataclass(frozen=True)
+class EncryptionSettings:
+    """Files we send to SBI: encrypted with SBI's public key."""
+
+    job: JobSettings
     gnupg_home: Path
     recipients: tuple[str, ...]
-    file_pattern: str = "SBI_*.txt"
     gpg_binary: str = "gpg"
     signing_key: str | None = None
     signing_passphrase: str | None = None
@@ -39,34 +57,37 @@ class Settings:
     cipher: str = "AES256"
     compression: str = "none"
     armor: bool = True
-    stable_seconds: float = 5.0
-    poll_seconds: float = 2.0
-    retry_seconds: float = 300.0
-    log_dir: Path = PROJECT_DIR / "logs"
+
+
+@dataclass(frozen=True)
+class DecryptionSettings:
+    """Files SBI sends us: decrypted with our private key."""
+
+    job: JobSettings
+    gnupg_home: Path
+    passphrase: str | None = None
+    gpg_binary: str = "gpg"
+
+
+@dataclass(frozen=True)
+class LogSettings:
+    log_dir: Path
     log_level: str = "INFO"
 
 
-def load_settings() -> Settings:
-    """Read the settings. A value already set as an environment variable wins over the .env file."""
-    load_dotenv(PROJECT_DIR / ".env")
-
-    source_dir = _path("SOURCE_DIR", "Source")
+def load_encryption_settings() -> EncryptionSettings:
+    """Read the encryption pipeline's settings. An environment variable wins over the .env file."""
+    _load_env_file()
+    _check_folders()
     signing_key = _text("SIGNING_KEY_FINGERPRINT")
-    log_level = _text("LOG_LEVEL", "INFO").upper()
-    if log_level not in LOG_LEVELS:
-        raise ConfigError(f"LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}, not {log_level!r}")
-
-    settings = Settings(
-        source_dir=source_dir,
-        sink_dir=_path("SINK_DIR", "Sink"),
-        archive_dir=_path("ARCHIVE_DIR", source_dir / "archive"),
+    return EncryptionSettings(
+        job=_job(_encryption_folders(), "FILE_PATTERN", "SBI_*.txt"),
         gnupg_home=_path("GNUPG_HOME", "gnupg_home"),
         recipients=tuple(
             _fingerprint("RECIPIENT_FINGERPRINTS", item)
             for item in _text("RECIPIENT_FINGERPRINTS").split(",")
             if item.strip()
         ),
-        file_pattern=_text("FILE_PATTERN", "SBI_*.txt"),
         gpg_binary=_text("GPG_BINARY", "gpg"),
         signing_key=_fingerprint("SIGNING_KEY_FINGERPRINT", signing_key) if signing_key else None,
         signing_passphrase=os.getenv("SIGNING_KEY_PASSPHRASE") or None,
@@ -74,15 +95,93 @@ def load_settings() -> Settings:
         cipher=_choice("CIPHER_ALGO", CIPHERS, default="AES256"),
         compression=_choice("COMPRESSION", COMPRESSIONS, default="none"),
         armor=_flag("ARMOR", default=True),
+    )
+
+
+def load_decryption_settings() -> DecryptionSettings:
+    """Read the decryption pipeline's settings. An environment variable wins over the .env file."""
+    _load_env_file()
+    _check_folders()
+    return DecryptionSettings(
+        job=_job(_decryption_folders(), "DECRYPT_FILE_PATTERN", "*.pgp, *.gpg, *.asc"),
+        gnupg_home=_path("DECRYPT_GNUPG_HOME", "gnupg_home_decrypt"),
+        passphrase=os.getenv("DECRYPT_KEY_PASSPHRASE") or None,  # as written: spaces can be part of it
+        gpg_binary=_text("GPG_BINARY", "gpg"),
+    )
+
+
+def load_log_settings() -> LogSettings:
+    _load_env_file()
+    log_level = _text("LOG_LEVEL", "INFO").upper()
+    if log_level not in LOG_LEVELS:
+        raise ConfigError(f"LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}, not {log_level!r}")
+    return LogSettings(log_dir=_path("LOG_DIR", "logs"), log_level=log_level)
+
+
+def how_to_write_in_env_file(value: str) -> str | None:
+    """How to write value after the = in .env so it is read back exactly: "as is", "in single quotes",
+    or None if neither works (it starts with a quote, or needs quotes and contains a single quote)."""
+    dotenv_log = logging.getLogger("dotenv.main")
+    level = dotenv_log.level
+    dotenv_log.setLevel(logging.ERROR)  # it warns about lines it can't read, which is what is being tried
+    try:
+        for form, line in (("as is", f"X={value}"), ("in single quotes", f"X='{value}'")):
+            if dotenv_values(stream=io.StringIO(line + "\n"), interpolate=False).get("X") == value:
+                return form
+        return None
+    finally:
+        dotenv_log.setLevel(level)
+
+
+def _load_env_file() -> None:
+    # interpolate=False: take every value literally. Otherwise "${...}" in a value, such as in a
+    # passphrase, would be replaced by an environment variable.
+    load_dotenv(PROJECT_DIR / ".env", interpolate=False)
+
+
+def _encryption_folders() -> tuple[Path, Path, Path]:
+    source_dir = _path("SOURCE_DIR", "Source")
+    return source_dir, _path("SINK_DIR", "Sink"), _path("ARCHIVE_DIR", source_dir / "archive")
+
+
+def _decryption_folders() -> tuple[Path, Path, Path]:
+    source_dir = _path("DECRYPT_SOURCE_DIR", "Inbound")
+    return source_dir, _path("DECRYPT_DESTINATION_DIR", "Decrypted"), _path("DECRYPT_ARCHIVE_DIR", source_dir / "archive")
+
+
+def _check_folders() -> None:
+    """Each pipeline needs three different folders, and the two pipelines must not share folders or keyrings."""
+    encryption, decryption = _encryption_folders(), _decryption_folders()
+    if len(set(encryption)) < 3:
+        raise ConfigError("SOURCE_DIR, SINK_DIR and ARCHIVE_DIR must be three different folders")
+    if len(set(decryption)) < 3:
+        raise ConfigError("DECRYPT_SOURCE_DIR, DECRYPT_DESTINATION_DIR and DECRYPT_ARCHIVE_DIR must be three different folders")
+    shared = set(encryption) & set(decryption)
+    if shared:
+        raise ConfigError(
+            f"The encryption and decryption pipelines must not share folders ({', '.join(map(str, shared))}). "
+            "For example, decrypted files landing in SOURCE_DIR would be encrypted and sent back to SBI."
+        )
+    if _path("GNUPG_HOME", "gnupg_home") == _path("DECRYPT_GNUPG_HOME", "gnupg_home_decrypt"):
+        raise ConfigError(
+            "GNUPG_HOME and DECRYPT_GNUPG_HOME must be different folders: our private key belongs only in "
+            "the decryption pipeline's keyring."
+        )
+
+
+def _job(folders: tuple[Path, Path, Path], pattern_setting: str, default_patterns: str) -> JobSettings:
+    source_dir, output_dir, archive_dir = folders
+    return JobSettings(
+        source_dir=source_dir,
+        output_dir=output_dir,
+        archive_dir=archive_dir,
+        file_patterns=tuple(
+            pattern.strip() for pattern in _text(pattern_setting, default_patterns).split(",") if pattern.strip()
+        ),
         stable_seconds=_seconds("STABLE_SECONDS", 5.0),
         poll_seconds=_seconds("POLL_SECONDS", 2.0, minimum=0.5),
         retry_seconds=_seconds("RETRY_SECONDS", 300.0),
-        log_dir=_path("LOG_DIR", "logs"),
-        log_level=log_level,
     )
-    if len({settings.source_dir, settings.sink_dir, settings.archive_dir}) < 3:
-        raise ConfigError("SOURCE_DIR, SINK_DIR and ARCHIVE_DIR must be three different folders")
-    return settings
 
 
 def _text(name: str, default: str = "") -> str:

@@ -12,8 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so the pipeline package can be imported
 
-from pipeline.config import ConfigError, load_settings
-from pipeline.encryptor import EncryptionError, open_keyring
+from pipeline.config import ConfigError, load_encryption_settings
+from pipeline.gpg import PgpError, open_keyring
 from scripts.setup_test_keys import RECIPIENT_KEYRING, TEST_KEYS_DIR
 
 
@@ -29,9 +29,9 @@ def main() -> int:
         print("No test key yet. Run: python scripts/setup_test_keys.py", file=sys.stderr)
         return 1
     try:
-        settings = load_settings()
+        settings = load_encryption_settings()
         gpg = open_keyring(RECIPIENT_KEYRING, settings.gpg_binary)
-    except (ConfigError, EncryptionError) as exc:
+    except (ConfigError, PgpError) as exc:
         print(exc, file=sys.stderr)
         return 1
 
@@ -46,7 +46,7 @@ def main() -> int:
     if result.valid:
         print(f"Signed by {result.username}: the signature is valid")
 
-    archived = settings.archive_dir / original_name
+    archived = settings.job.archive_dir / original_name
     if not archived.is_file():
         return 0
     if output.read_bytes() == archived.read_bytes():

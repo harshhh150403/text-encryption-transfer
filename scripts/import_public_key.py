@@ -14,16 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so the pipeline package can be imported
 
-from pipeline.config import ConfigError, load_settings
-from pipeline.encryptor import (
-    EXPIRY_WARNING_DAYS,
-    EncryptionError,
-    import_public_key,
-    key_expiry,
-    key_problem,
-    open_keyring,
-    uses_gnupg_only_format,
-)
+from pipeline.config import ConfigError, load_encryption_settings
+from pipeline.encryptor import EXPIRY_WARNING_DAYS, uses_gnupg_only_format
+from pipeline.gpg import PgpError, import_public_key, key_expiry, key_problem, open_keyring
 
 
 def main() -> int:
@@ -32,7 +25,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        settings = load_settings()
+        settings = load_encryption_settings()
         gpg = open_keyring(settings.gnupg_home, settings.gpg_binary)
         keys = gpg.list_keys(keys=import_public_key(gpg, args.key_file))
         print(f"Imported {len(keys)} key{'s' if len(keys) != 1 else ''} from {args.key_file.name}:")
@@ -49,7 +42,7 @@ def main() -> int:
             if uses_gnupg_only_format(gpg, [key["fingerprint"]], settings.cipher):
                 print("     format:      GnuPG's OCB format (see the note below)")
                 ocb = True
-    except (ConfigError, EncryptionError) as exc:
+    except (ConfigError, PgpError) as exc:
         print(exc, file=sys.stderr)
         return 1
 

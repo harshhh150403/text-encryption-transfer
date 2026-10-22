@@ -18,10 +18,8 @@ format that most PGP programs other than GnuPG can't decrypt (see COMPATIBLE_PRE
 """
 
 import argparse
-import getpass
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -29,10 +27,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so the pipeline package can be imported
 
-from pipeline.config import PROJECT_DIR, ConfigError, load_settings
-from pipeline.encryptor import EncryptionError, create_key_pair, open_keyring
-
-MIN_PASSPHRASE_LENGTH = 12
+from pipeline.config import PROJECT_DIR, ConfigError, load_encryption_settings
+from pipeline.gpg import (
+    PgpError,
+    ask_new_passphrase,
+    create_key_pair,
+    grouped_fingerprint,
+    open_keyring,
+    stop_gpg_agent,
+)
 
 
 def main() -> int:
@@ -46,11 +49,15 @@ def main() -> int:
     if args.output.exists() and any(args.output.iterdir()):
         print(f"{args.output} is not empty. Hand over or delete the files from the last run first.", file=sys.stderr)
         return 1
-    passphrase = _ask_passphrase()
+    try:
+        settings = load_encryption_settings()
+    except ConfigError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    passphrase = ask_new_passphrase()
 
     keyring = Path(tempfile.mkdtemp())
     try:
-        settings = load_settings()
         gpg = open_keyring(keyring / "k", settings.gpg_binary)
         print("Creating the key pair (RSA 4096). This can take a minute...")
         fingerprint = create_key_pair(gpg, args.name, args.email, passphrase, key_length=4096, expires=args.expires)
@@ -58,7 +65,7 @@ def main() -> int:
         private_key = gpg.export_keys(fingerprint, secret=True, passphrase=passphrase)
         revocation = (keyring / "k" / "openpgp-revocs.d" / f"{fingerprint}.rev").read_text(encoding="utf-8")
         if not (public_key and private_key):
-            raise EncryptionError("GnuPG could not export the new key")
+            raise PgpError("GnuPG could not export the new key")
 
         args.output.mkdir(parents=True, exist_ok=True)
         (args.output / "public_key.asc").write_text(public_key, encoding="utf-8")
@@ -67,14 +74,13 @@ def main() -> int:
         private_key_file.write_text(private_key, encoding="utf-8")
         if os.name != "nt":
             private_key_file.chmod(0o600)
-    except (ConfigError, EncryptionError, OSError) as exc:
+    except (PgpError, OSError) as exc:
         print(exc, file=sys.stderr)
         return 1
     finally:
-        _delete_temporary_keyring(keyring)
+        _delete_temporary_keyring(keyring, settings.gpg_binary)
 
-    grouped = " ".join(fingerprint[i : i + 4] for i in range(0, len(fingerprint), 4))
-    print(f"\nFingerprint: {grouped}")
+    print(f"\nFingerprint: {grouped_fingerprint(fingerprint)}")
     print(f"Files written to {args.output}:")
     print("  public_key.asc              keep: python scripts/import_public_key.py <this file>")
     print("  PRIVATE_KEY.asc             for the recipient only")
@@ -87,10 +93,9 @@ def main() -> int:
     return 0
 
 
-def _delete_temporary_keyring(keyring: Path) -> None:
+def _delete_temporary_keyring(keyring: Path, gpg_binary: str) -> None:
     """Delete the temporary keyring, which holds a copy of the private key."""
-    if shutil.which("gpgconf"):  # stop its background agent first, or Windows may keep its files locked
-        subprocess.run(["gpgconf", "--homedir", str(keyring / "k"), "--kill", "gpg-agent"], capture_output=True)
+    stop_gpg_agent(keyring / "k", gpg_binary)  # first, or Windows may keep the keyring's files locked
     for _ in range(5):
         shutil.rmtree(keyring, ignore_errors=True)
         if not keyring.exists():
@@ -98,19 +103,6 @@ def _delete_temporary_keyring(keyring: Path) -> None:
         time.sleep(1)
     print(f"\nWARNING: could not delete {keyring}, which holds a copy of the private key. Delete it by hand.",
           file=sys.stderr)
-
-
-def _ask_passphrase() -> str:
-    print(f"Choose a passphrase for the private key (at least {MIN_PASSPHRASE_LENGTH} characters,")
-    print("for example 5-6 random words). It is not shown while you type.")
-    while True:
-        passphrase = getpass.getpass("Passphrase: ")
-        if len(passphrase) < MIN_PASSPHRASE_LENGTH:
-            print(f"Too short: use at least {MIN_PASSPHRASE_LENGTH} characters.")
-        elif passphrase != getpass.getpass("Repeat it: "):
-            print("The two entries don't match. Try again.")
-        else:
-            return passphrase
 
 
 if __name__ == "__main__":

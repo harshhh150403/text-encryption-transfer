@@ -6,8 +6,10 @@
 
 # Keyrings and key files: never commit these
 gnupg_home/
+gnupg_home_decrypt/
 test_keys/
 key_handover/
+key_export/
 wheels/
 *.asc
 *.gpg
@@ -18,6 +20,8 @@ wheels/
 # the sample file for testing is in samples/, which the pipeline never touches.
 Source/
 Sink/
+Inbound/
+Decrypted/
 *.pgp
 
 # Logs

@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so the pipeli
 
 import gnupg
 
-from pipeline.config import PROJECT_DIR, ConfigError, load_settings
-from pipeline.encryptor import EncryptionError, create_key_pair, import_public_key, open_keyring
+from pipeline.config import PROJECT_DIR, ConfigError, load_encryption_settings
+from pipeline.gpg import PgpError, create_key_pair, import_public_key, open_keyring
 
 TEST_KEYS_DIR = PROJECT_DIR / "test_keys"
 # The recipient's keyring. Kept short: on macOS, gpg's socket path inside it has a length limit.
@@ -28,13 +28,13 @@ SAMPLE_FILE = PROJECT_DIR / "samples" / "SBI_SBIN55_20261014_0002.txt"
 
 def main() -> int:
     try:
-        settings = load_settings()
+        settings = load_encryption_settings()
         recipient_gpg = open_keyring(RECIPIENT_KEYRING, settings.gpg_binary)
         fingerprint = _test_key(recipient_gpg)
         PUBLIC_KEY_FILE.write_text(recipient_gpg.export_keys(fingerprint), encoding="utf-8")
         import_public_key(open_keyring(settings.gnupg_home, settings.gpg_binary), PUBLIC_KEY_FILE)
-        settings.source_dir.mkdir(parents=True, exist_ok=True)  # not in git, so missing after a fresh clone
-    except (ConfigError, EncryptionError, OSError) as exc:
+        settings.job.source_dir.mkdir(parents=True, exist_ok=True)  # not in git, so missing after a fresh clone
+    except (ConfigError, PgpError, OSError) as exc:
         print(exc, file=sys.stderr)
         return 1
 
@@ -47,10 +47,10 @@ def main() -> int:
         print(f"  {ENV_FILE.name} already lists another recipient. To use the test key, set:")
         print(f"  RECIPIENT_FINGERPRINTS={fingerprint}")
     print("\nNext, drop the sample file into Source, encrypt it, then decrypt it the way SBI will:")
-    print(f"  {'copy' if os.name == 'nt' else 'cp'} {_shown(SAMPLE_FILE)} {_shown(settings.source_dir)}")
+    print(f"  {'copy' if os.name == 'nt' else 'cp'} {_shown(SAMPLE_FILE)} {_shown(settings.job.source_dir)}")
     print("  python main.py --once")
     print(f"  python {_shown(PROJECT_DIR / 'scripts' / 'decrypt_file.py')} "
-          f"{_shown(settings.sink_dir / (SAMPLE_FILE.name + '.pgp'))}")
+          f"{_shown(settings.job.output_dir / (SAMPLE_FILE.name + '.pgp'))}")
     return 0
 
 
