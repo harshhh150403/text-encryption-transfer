@@ -12,6 +12,8 @@ The pipeline only ever holds SBI's **public** key. Only SBI's private key can de
 
 ## How files are handled
 
+- Files are encrypted as SBI specified: AES256, no compression, no signature, ASCII-armored. The `.pgp` file is therefore text starting with `-----BEGIN PGP MESSAGE-----`. Each of these can be changed in `.env` (`CIPHER_ALGO`, `COMPRESSION`, `SIGNING_KEY_FINGERPRINT`, `ARMOR`); the pipeline logs the format it uses at startup.
+
 - Only files whose names match `FILE_PATTERN` (default `SBI_*.txt`) are picked up. Everything else is ignored, including temporary names such as `.part` or `.tmp`.
 - A file is picked up once it hasn't changed for `STABLE_SECONDS` and, on Windows, no other program still has it open for writing. The safest setup is for whatever drops files into Source to write them under a temporary name and rename them when finished.
 - The encrypted file is written as `<name>.pgp.part` and renamed when complete, so anything reading Sink never sees half a file.
@@ -101,15 +103,31 @@ Logs go to the console and to `logs/pipeline.log`. Exit codes: `0` success, `1` 
 
 ## SBI's key
 
-**If SBI sends you its public key**, import it and confirm the printed fingerprint with SBI by phone:
+SBI sends us its **public** key and keeps the private key. Import it with:
 
 ```
-python scripts/import_public_key.py path\to\sbi_public_key.asc
+python scripts/import_public_key.py "SBI Public Key/uat_NextGen_SBI_public.asc (1).txt"
 ```
 
-Then set `RECIPIENT_FINGERPRINTS` in `.env` to that fingerprint, replacing the test key's. The import script refuses any file that contains a private key.
+The quotes are needed because the file name contains spaces. The script lists every key in the file, with its fingerprint and expiry date, and whether it can be used. It refuses any file that contains a private key.
 
-**If you create the key pair for SBI**, use the script below on a trusted company computer, not on the pipeline server. Don't use Kleopatra's "New Key Pair": keys made by recent Kleopatra and GnuPG versions make gpg encrypt in a newer format (OCB) that most PGP programs other than GnuPG can't decrypt. The script creates the key with settings that avoid it.
+Then:
+
+1. **Pick one key.** A file can hold several keys; SBI's UAT file holds four. Ask SBI which one to use.
+2. **Confirm its fingerprint with SBI by phone,** so you know nobody swapped the key on the way.
+3. **Set it in `.env`:** `RECIPIENT_FINGERPRINTS=<that fingerprint>`.
+4. **Watch the expiry date.** The pipeline warns 30 days before the key expires, and stops encrypting once it has.
+
+### Keys that ask for OCB
+
+Keys created by recent GnuPG or Kleopatra versions, SBI's UAT keys among them, ask gpg to encrypt in its newer OCB format. gpg then always does, whatever options it's given. GnuPG 2.3+ and Kleopatra can decrypt OCB files, but many other PGP programs can't, so the pipeline refuses such a key at startup. There are two ways forward:
+
+- **SBI confirms that its software decrypts OCB,** for example by decrypting a UAT test file. Then set `ALLOW_GNUPG_ONLY_FORMAT=true` in `.env`.
+- **SBI removes OCB from its key's preferences** and sends us the public key again. Files then use the classic format that every PGP program reads. In GnuPG, the key's owner runs `gpg --edit-key <fingerprint>`, then `setpref AES256 AES192 AES SHA512 SHA384 SHA256 Uncompressed ZLIB ZIP`, answers `y`, and enters `save`. This changes only the key's preferences: the key and its fingerprint stay the same. We then import the re-sent public key with the import script as before.
+
+### Creating a key pair for a recipient
+
+SBI supplies its own key, so this is only needed for rehearsals, or if a recipient ever asks us to create its key. Use the script below on a trusted company computer, not on the pipeline server. Don't use Kleopatra's "New Key Pair": its keys ask for OCB (see above). The script creates the key without it.
 
 ```
 python scripts/create_recipient_key.py --name "SBI - <company> file exchange" --email <SBI contact email>

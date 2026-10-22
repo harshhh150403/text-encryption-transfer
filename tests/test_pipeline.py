@@ -1,6 +1,8 @@
 """Tests using real GnuPG with throwaway keys and temporary folders."""
 
+import base64
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -22,6 +24,8 @@ from pipeline.encryptor import (
     create_key_pair,
     data_packet_type,
     import_public_key,
+    key_expiry,
+    key_problem,
     open_keyring,
     uses_gnupg_only_format,
 )
@@ -30,6 +34,17 @@ from pipeline.watcher import SourceWatcher
 
 SAMPLE_NAME = "SBI_SBIN55_20261014_0002.txt"
 SAMPLE = b"DCR,8.50,13/10/2026,SBIN55,TEST CUSTOMER,,000000000,SBIN0000000,49,10627,INR\n"
+
+# OpenPGP's numbers for the algorithms (RFC 4880, 9.2 and 9.3), as gpg reports them.
+AES128, AES256 = 7, 9
+ZLIB = 2
+
+
+def dearmor(armored: bytes) -> bytes:
+    """The binary OpenPGP data inside an ASCII-armored message."""
+    lines = armored.decode("ascii").splitlines()
+    body = lines[lines.index("") + 1 : -1]  # between the blank line after the header and the END line
+    return base64.b64decode("".join(line for line in body if not line.startswith("=")))  # "=..." is a checksum
 
 
 def make_key(gpg, name: str, passphrase: str | None = None, gnupg_defaults: bool = False) -> str:
@@ -108,6 +123,17 @@ class PipelineTest(unittest.TestCase):
         self.assertTrue(result.ok, result.status)
         return result
 
+    def cipher_used(self, path: Path) -> int:
+        """The number of the cipher the file was encrypted with, as gpg reports it when decrypting."""
+        return int(re.search(r"DECRYPTION_INFO \d+ (\d+)", self.decrypt(path).stderr).group(1))
+
+    def packets(self, path: Path) -> str:
+        """gpg's list of the packets in an encrypted file, decrypted with the recipient's key."""
+        return subprocess.run(
+            ["gpg", "--homedir", str(self.keys_dir / "recipient"), "--batch", "--list-packets", str(path)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+
     def test_encrypts_into_sink_and_archives_the_original(self):
         source = self.add_source_file()
 
@@ -118,10 +144,34 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual((self.settings.archive_dir / SAMPLE_NAME).read_bytes(), SAMPLE)
         encrypted = sink_file.read_bytes()
         self.assertNotIn(SAMPLE, encrypted)
-        self.assertFalse(encrypted.startswith(b"-----BEGIN PGP"), "output should be binary .pgp, not text")
-        self.assertEqual(data_packet_type(encrypted), CLASSIC_DATA_PACKET, "any PGP program must be able to read it")
+        self.assertEqual(
+            data_packet_type(dearmor(encrypted)), CLASSIC_DATA_PACKET, "any PGP program must be able to read it"
+        )
         self.assertEqual(self.decrypt(sink_file).data, SAMPLE)
         self.assertEqual(list(self.settings.sink_dir.iterdir()), [sink_file], "no .part file should be left")
+
+    def test_files_are_in_the_format_sbi_asked_for(self):
+        sink_file = transfer_file(self.add_source_file(), self.settings, self.encryptor)
+
+        self.assertTrue(sink_file.read_bytes().startswith(b"-----BEGIN PGP MESSAGE-----"), "ASCII-armored")
+        self.assertEqual(self.cipher_used(sink_file), AES256)
+        packets = self.packets(sink_file)
+        self.assertIn(":literal data packet:", packets)
+        self.assertNotIn(":compressed packet:", packets, "no compression")
+        self.assertNotIn(":onepass_sig packet:", packets, "no signature")
+        self.assertNotIn(":signature packet:", packets, "no signature")
+
+    def test_format_settings_are_used(self):
+        encryptor = Encryptor(
+            self.pipeline_gpg, self.settings.recipients, cipher="AES128", compression="zlib", armor=False
+        )
+
+        sink_file = transfer_file(self.add_source_file(), self.settings, encryptor)
+
+        self.assertFalse(sink_file.read_bytes().startswith(b"-----BEGIN"), "binary")
+        self.assertEqual(self.cipher_used(sink_file), AES128)
+        self.assertIn(f":compressed packet: algo={ZLIB}", self.packets(sink_file))
+        self.assertEqual(self.decrypt(sink_file).data, SAMPLE)
 
     def test_never_overwrites_a_file_already_in_sink(self):
         source = self.add_source_file()
@@ -236,6 +286,15 @@ class PipelineTest(unittest.TestCase):
 
         self.assertEqual(import_public_key(self.fresh_keyring(), public_key_file), [self.recipient])
 
+    def test_importing_a_file_with_several_keys(self):
+        fresh = self.fresh_keyring()
+        other = make_key(fresh, "Other")
+        both = self.tmp / "both.txt"  # SBI's file is named .txt, which works as long as it holds the keys
+        both.write_text(self.recipient_gpg.export_keys(self.recipient) + fresh.export_keys(other))
+
+        importer = open_test_keyring(self.tmp / "importer", self.addCleanup)
+        self.assertEqual(import_public_key(importer, both), sorted([self.recipient, other]))
+
     def test_importing_a_private_key_is_refused(self):
         private_key_file = self.tmp / "private.asc"
         private_key_file.write_text(
@@ -249,6 +308,31 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(fresh.list_keys(secret=True), [])
 
 
+class KeyStatusTest(unittest.TestCase):
+    """Key entries as gpg.list_keys() returns them: "trust" is gpg's validity, "cap" what the key can do."""
+
+    def key(self, trust="-", cap="scESC", expires="", subkeys=()):
+        return {"trust": trust, "cap": cap, "expires": expires, "subkey_info": dict(enumerate(subkeys))}
+
+    def test_usable_and_unusable_keys(self):
+        self.assertIsNone(key_problem(self.key()))
+        self.assertEqual(key_problem(self.key(trust="e", cap="sc")), "has expired")
+        self.assertEqual(key_problem(self.key(trust="r")), "has been revoked")
+        self.assertIn("can't be used for encryption", key_problem(self.key(cap="scSC")))
+
+    def test_expiry_is_the_soonest_of_the_key_and_its_encryption_subkeys(self):
+        self.assertIsNone(key_expiry(self.key()))
+        key = self.key(
+            expires="1795092464",
+            subkeys=[
+                {"cap": "e", "trust": "-", "expires": "1790000000"},
+                {"cap": "e", "trust": "e", "expires": "1700000000"},  # already expired: ignored
+                {"cap": "s", "trust": "-", "expires": "1600000000"},  # signing only: ignored
+            ],
+        )
+        self.assertEqual(key_expiry(key).timestamp(), 1790000000)
+
+
 class SettingsTest(unittest.TestCase):
     def load(self, **environment) -> Settings:
         with mock.patch.dict(os.environ, environment, clear=True), mock.patch("pipeline.config.load_dotenv"):
@@ -260,6 +344,18 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.source_dir, PROJECT_DIR / "Source")
         self.assertEqual(settings.archive_dir, PROJECT_DIR / "Source" / "archive")
         self.assertEqual(settings.recipients, ())
+        # What SBI asked for: AES256, no compression, ASCII-armored, no signature.
+        self.assertEqual((settings.cipher, settings.compression, settings.armor), ("AES256", "none", True))
+        self.assertIsNone(settings.signing_key)
+
+    def test_format_settings(self):
+        settings = self.load(CIPHER_ALGO="aes128", COMPRESSION="ZLIB", ARMOR="false")
+
+        self.assertEqual((settings.cipher, settings.compression, settings.armor), ("AES128", "zlib", False))
+        with self.assertRaises(ConfigError):
+            self.load(CIPHER_ALGO="3DES")
+        with self.assertRaises(ConfigError):
+            self.load(COMPRESSION="gzip")
 
     def test_fingerprints_are_normalised(self):
         settings = self.load(RECIPIENT_FINGERPRINTS="abcd 1234 abcd 1234 abcd 1234 abcd 1234 abcd 1234, " + "F" * 40)

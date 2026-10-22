@@ -57,7 +57,10 @@ def run(settings: Settings, once: bool) -> int:
             settings.recipients,
             settings.signing_key,
             settings.signing_passphrase,
-            settings.allow_gnupg_only_format,
+            cipher=settings.cipher,
+            compression=settings.compression,
+            armor=settings.armor,
+            allow_gnupg_only_format=settings.allow_gnupg_only_format,
         )
         encryptor.check_keys()
     except EncryptionError as exc:

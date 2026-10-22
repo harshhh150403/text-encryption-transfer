@@ -90,16 +90,51 @@ def create_key_pair(
     return key.fingerprint
 
 
-def uses_gnupg_only_format(gpg: gnupg.GPG, recipients: Iterable[str]) -> bool:
-    """True if files encrypted for these recipients would use GnuPG's OCB format (see COMPATIBLE_PREFERENCES)."""
-    result = gpg.encrypt(b"format check", list(recipients), always_trust=True, armor=False)
+def uses_gnupg_only_format(gpg: gnupg.GPG, recipients: Iterable[str], cipher: str = "AES256") -> bool:
+    """True if files encrypted for these recipients would use GnuPG's OCB format (see COMPATIBLE_PREFERENCES).
+
+    gpg chooses OCB whenever every recipient's key says it supports OCB, whatever options it is given.
+    """
+    result = gpg.encrypt(
+        b"format check", list(recipients), always_trust=True, armor=False, extra_args=["--cipher-algo", cipher]
+    )
     if not result.ok:
         raise EncryptionError(f"GnuPG could not encrypt a test message: {result.status} ({_gpg_messages(result.stderr)})")
     return data_packet_type(result.data) == OCB_DATA_PACKET
 
 
+def key_problem(key: dict, capability: str = "e", purpose: str = "encryption") -> str | None:
+    """Why the key can't be used for purpose right now, completing "Key ... ", or None if it can.
+
+    key is an entry from gpg.list_keys(); capability is gpg's letter for the purpose: "e" (encrypt)
+    or "s" (sign).
+    """
+    if key["trust"] == "r":
+        return "has been revoked"
+    if key["trust"] == "e":
+        return "has expired"
+    # On the main key, gpg lists in upper case what the key as a whole can be used for right now.
+    if capability.upper() not in key["cap"]:
+        return f"can't be used for {purpose} (part of it may have expired or been revoked)"
+    return None
+
+
+def key_expiry(key: dict, capability: str = "e") -> datetime | None:
+    """When the key stops working for the capability: the soonest expiry of the key and its usable subkeys."""
+    dates = [key["expires"]] + [
+        subkey["expires"]
+        for subkey in key.get("subkey_info", {}).values()
+        if capability in subkey["cap"] and subkey["trust"] not in ("e", "r")
+    ]
+    soonest = min((int(date) for date in dates if date), default=None)
+    return None if soonest is None else datetime.fromtimestamp(soonest, timezone.utc)
+
+
 class Encryptor:
-    """Encrypts files for a fixed list of recipients, optionally signing them with our own key."""
+    """Encrypts files for a fixed list of recipients, optionally signing them with our own key.
+
+    The file format defaults to what SBI asked for: AES256, no compression, ASCII-armored.
+    """
 
     def __init__(
         self,
@@ -107,12 +142,19 @@ class Encryptor:
         recipients: Iterable[str],
         signing_key: str | None = None,
         signing_passphrase: str | None = None,
+        *,
+        cipher: str = "AES256",
+        compression: str = "none",
+        armor: bool = True,
         allow_gnupg_only_format: bool = False,
     ):
         self._gpg = gpg
         self._recipients = list(recipients)
         self._signing_key = signing_key
         self._signing_passphrase = signing_passphrase
+        self._cipher = cipher
+        self._compression = compression
+        self._armor = armor
         self._allow_gnupg_only_format = allow_gnupg_only_format
 
     def check_keys(self) -> None:
@@ -138,28 +180,42 @@ class Encryptor:
                 )
             _check_key(public_keys[self._signing_key], "s", "signing")
             log.info("Signing with %s", _describe(public_keys[self._signing_key]))
-        if not self._allow_gnupg_only_format and uses_gnupg_only_format(self._gpg, self._recipients):
+        ocb = uses_gnupg_only_format(self._gpg, self._recipients, self._cipher)
+        if ocb and not self._allow_gnupg_only_format:
             raise EncryptionError(
-                "Files encrypted for the recipient key would use GnuPG's newer OCB format, which most PGP "
-                "programs other than GnuPG can't decrypt. Keys created by recent GnuPG or Kleopatra versions "
-                "cause this. Recreate the key with scripts/create_recipient_key.py, or, if the recipient "
-                "confirms they decrypt with GnuPG 2.3 or newer, set ALLOW_GNUPG_ONLY_FORMAT=true in .env."
+                "The recipient's key asks for GnuPG's newer OCB format, so gpg would encrypt files in it. "
+                "GnuPG 2.3+ and Kleopatra can decrypt OCB, but many other PGP programs can't. Keys created "
+                "by recent GnuPG or Kleopatra versions do this. Either ask the recipient to confirm that "
+                "their software decrypts OCB and then set ALLOW_GNUPG_ONLY_FORMAT=true in .env, or ask them "
+                "to remove OCB from their key's preferences and send the public key again (see README)."
             )
+        log.info(
+            "Files are %s, encrypted with %s%s, %s and %s",
+            "ASCII-armored" if self._armor else "binary",
+            self._cipher,
+            " in GnuPG's OCB mode" if ocb else "",
+            "not compressed" if self._compression == "none" else f"compressed with {self._compression.upper()}",
+            "signed" if self._signing_key else "not signed",
+        )
 
     def encrypt_file(self, source: Path, output: Path) -> None:
-        """Encrypt source into output as binary OpenPGP data."""
+        """Encrypt source into output in the configured format."""
         result = self._gpg.encrypt_file(
             str(source),
             self._recipients,
             # This keyring only holds keys imported on purpose, and recipients are given by full
             # fingerprint, so gpg's web-of-trust check (which rejects keys nobody has certified) adds nothing.
             always_trust=True,
-            armor=False,
+            armor=self._armor,
             output=str(output),
             sign=self._signing_key,
             passphrase=self._signing_passphrase,
-            # Keep the original file name inside the encrypted file, for recipients whose tools use it.
-            extra_args=["--set-filename", source.name],
+            extra_args=[
+                # Keep the original file name inside the encrypted file, for recipients whose tools use it.
+                "--set-filename", source.name,
+                "--cipher-algo", self._cipher,
+                "--compress-algo", self._compression,
+            ],
         )
         if not result.ok:
             raise EncryptionError(
@@ -168,27 +224,12 @@ class Encryptor:
 
 
 def _check_key(key: dict, capability: str, purpose: str) -> None:
-    """Raise if the key can't be used for purpose; warn if it expires within EXPIRY_WARNING_DAYS.
-
-    capability is gpg's letter for the purpose: "e" (encrypt) or "s" (sign).
-    """
-    if key["trust"] == "r":
-        raise EncryptionError(f"Key {_describe(key)} has been revoked")
-    if key["trust"] == "e":
-        raise EncryptionError(f"Key {_describe(key)} has expired")
-    # On the main key, gpg lists in upper case what the key as a whole can be used for right now.
-    if capability.upper() not in key["cap"]:
-        raise EncryptionError(
-            f"Key {_describe(key)} can't be used for {purpose} (part of it may have expired or been revoked)"
-        )
-    expiry_dates = [key["expires"]] + [
-        subkey["expires"]
-        for subkey in key.get("subkey_info", {}).values()
-        if capability in subkey["cap"] and subkey["trust"] not in ("e", "r")
-    ]
-    soonest = min((int(date) for date in expiry_dates if date), default=None)
-    if soonest is not None:
-        expires = datetime.fromtimestamp(soonest, timezone.utc)
+    """Raise if the key can't be used for purpose; warn if it expires within EXPIRY_WARNING_DAYS."""
+    problem = key_problem(key, capability, purpose)
+    if problem:
+        raise EncryptionError(f"Key {_describe(key)} {problem}")
+    expires = key_expiry(key, capability)
+    if expires is not None:
         days_left = (expires - datetime.now(timezone.utc)).days
         if days_left <= EXPIRY_WARNING_DAYS:
             log.warning(

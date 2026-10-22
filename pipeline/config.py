@@ -11,6 +11,11 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
+# Accepted values for the file format settings. The defaults are what SBI asked for: AES256, no
+# compression, ASCII-armored.
+CIPHERS = ("AES256", "AES192", "AES128")
+COMPRESSIONS = ("none", "zip", "zlib", "bzip2")
+
 # A full key fingerprint: 40 hex characters (v4 keys) or 64 (newer v5/v6 keys).
 _FINGERPRINT = re.compile(r"[0-9A-F]{40}|[0-9A-F]{64}")
 
@@ -31,6 +36,9 @@ class Settings:
     signing_key: str | None = None
     signing_passphrase: str | None = None
     allow_gnupg_only_format: bool = False
+    cipher: str = "AES256"
+    compression: str = "none"
+    armor: bool = True
     stable_seconds: float = 5.0
     poll_seconds: float = 2.0
     retry_seconds: float = 300.0
@@ -62,7 +70,10 @@ def load_settings() -> Settings:
         gpg_binary=_text("GPG_BINARY", "gpg"),
         signing_key=_fingerprint("SIGNING_KEY_FINGERPRINT", signing_key) if signing_key else None,
         signing_passphrase=os.getenv("SIGNING_KEY_PASSPHRASE") or None,
-        allow_gnupg_only_format=_flag("ALLOW_GNUPG_ONLY_FORMAT"),
+        allow_gnupg_only_format=_flag("ALLOW_GNUPG_ONLY_FORMAT", default=False),
+        cipher=_choice("CIPHER_ALGO", CIPHERS, default="AES256"),
+        compression=_choice("COMPRESSION", COMPRESSIONS, default="none"),
+        armor=_flag("ARMOR", default=True),
         stable_seconds=_seconds("STABLE_SECONDS", 5.0),
         poll_seconds=_seconds("POLL_SECONDS", 2.0, minimum=0.5),
         retry_seconds=_seconds("RETRY_SECONDS", 300.0),
@@ -84,13 +95,24 @@ def _path(name: str, default: str | Path) -> Path:
     return path if path.is_absolute() else PROJECT_DIR / path
 
 
-def _flag(name: str) -> bool:
-    raw = _text(name, "false").lower()
+def _flag(name: str, default: bool) -> bool:
+    raw = _text(name).lower()
+    if not raw:
+        return default
     if raw in ("true", "yes", "1"):
         return True
     if raw in ("false", "no", "0"):
         return False
     raise ConfigError(f"{name} must be true or false, not {raw!r}")
+
+
+def _choice(name: str, allowed: tuple[str, ...], default: str) -> str:
+    """A setting that must be one of the allowed values (not case-sensitive)."""
+    raw = _text(name, default)
+    for value in allowed:
+        if raw.lower() == value.lower():
+            return value
+    raise ConfigError(f"{name} must be one of {', '.join(allowed)}, not {raw!r}")
 
 
 def _seconds(name: str, default: float, minimum: float = 0.0) -> float:
