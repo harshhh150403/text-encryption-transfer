@@ -33,3 +33,5 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+!SBI Public Key/*.asc
