@@ -57,6 +57,7 @@ class EncryptionSettings:
     cipher: str = "AES256"
     compression: str = "none"
     armor: bool = True
+    file_name: str = "{name}.pgp.txt"
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,7 @@ def load_encryption_settings() -> EncryptionSettings:
         cipher=_choice("CIPHER_ALGO", CIPHERS, default="AES256"),
         compression=_choice("COMPRESSION", COMPRESSIONS, default="none"),
         armor=_flag("ARMOR", default=True),
+        file_name=_file_name_pattern("ENCRYPTED_FILE_NAME", "{name}.pgp.txt"),
     )
 
 
@@ -103,7 +105,7 @@ def load_decryption_settings() -> DecryptionSettings:
     _load_env_file()
     _check_folders()
     return DecryptionSettings(
-        job=_job(_decryption_folders(), "DECRYPT_FILE_PATTERN", "*.pgp, *.gpg, *.asc"),
+        job=_job(_decryption_folders(), "DECRYPT_FILE_PATTERN", "*.pgp, *.gpg, *.asc, *.pgp.txt"),
         gnupg_home=_path("DECRYPT_GNUPG_HOME", "gnupg_home_decrypt"),
         passphrase=os.getenv("DECRYPT_KEY_PASSPHRASE") or None,  # as written: spaces can be part of it
         gpg_binary=_text("GPG_BINARY", "gpg"),
@@ -212,6 +214,22 @@ def _choice(name: str, allowed: tuple[str, ...], default: str) -> str:
         if raw.lower() == value.lower():
             return value
     raise ConfigError(f"{name} must be one of {', '.join(allowed)}, not {raw!r}")
+
+
+def _file_name_pattern(name: str, default: str) -> str:
+    """A pattern for naming a file after another: {name} is the original name without its extension,
+    {ext} the extension (such as .txt)."""
+    pattern = _text(name, default)
+    try:
+        example = pattern.format(name="SBI_X", ext=".txt")
+    except (KeyError, IndexError, ValueError):
+        example = None
+    if example is None or "{name}" not in pattern or any(char in example for char in '/\\:*?"<>|'):
+        raise ConfigError(
+            f"{name} must contain {{name}} (the original name without its extension) and may contain {{ext}} "
+            f"(its extension), as in {default}. {pattern!r} is not valid."
+        )
+    return pattern
 
 
 def _seconds(name: str, default: float, minimum: float = 0.0) -> float:

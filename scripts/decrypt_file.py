@@ -3,7 +3,7 @@
 This does what SBI will do with its own private key. The decrypted copy goes to test_keys/decrypted/
 and is compared with the original in the archive.
 
-    python scripts/decrypt_file.py Sink/SBI_SBIN55_20261014_0002.txt.pgp
+    python scripts/decrypt_file.py Sink/SBI_SBIN55_20261014_0002.pgp.txt
 """
 
 import argparse
@@ -13,12 +13,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so the pipeline package can be imported
 
 from pipeline.config import ConfigError, load_encryption_settings
+from pipeline.decryptor import decrypted_file_name
+from pipeline.encryptor import encrypted_file_name
 from pipeline.gpg import PgpError, open_keyring
 from scripts.setup_test_keys import RECIPIENT_KEYRING, TEST_KEYS_DIR
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Decrypt a .pgp file from Sink with the test key.")
+    parser = argparse.ArgumentParser(description="Decrypt an encrypted file from Sink with the test key.")
     parser.add_argument("encrypted_file", type=Path)
     args = parser.parse_args()
 
@@ -35,7 +37,16 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 1
 
-    original_name = args.encrypted_file.name.removesuffix(".pgp")
+    # The original in the archive is the file whose encrypted name this is.
+    archive = settings.job.archive_dir
+    archived = next(
+        (
+            path for path in sorted(archive.iterdir() if archive.is_dir() else [])
+            if path.is_file() and encrypted_file_name(path.name, settings.file_name) == args.encrypted_file.name
+        ),
+        None,
+    )
+    original_name = archived.name if archived else decrypted_file_name(args.encrypted_file.name)
     output = TEST_KEYS_DIR / "decrypted" / original_name
     output.parent.mkdir(parents=True, exist_ok=True)
     result = gpg.decrypt_file(str(args.encrypted_file), output=str(output))
@@ -46,8 +57,7 @@ def main() -> int:
     if result.valid:
         print(f"Signed by {result.username}: the signature is valid")
 
-    archived = settings.job.archive_dir / original_name
-    if not archived.is_file():
+    if archived is None:
         return 0
     if output.read_bytes() == archived.read_bytes():
         print("It matches the original in the archive exactly.")

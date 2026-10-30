@@ -1,6 +1,7 @@
 """PGP encryption of files we send to SBI, with SBI's public key."""
 
 import logging
+import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +12,9 @@ from .gpg import PgpError, describe_key, gpg_messages, key_expiry, key_problem
 
 log = logging.getLogger(__name__)
 
-ENCRYPTED_SUFFIX = ".pgp"
+# How SBI wants encrypted files named: {name} is the original name without its extension, {ext} the
+# extension. SBI_SBIN55_20261014_0002.txt becomes SBI_SBIN55_20261014_0002.pgp.txt.
+SBI_FILE_NAME = "{name}.pgp.txt"
 
 # Warn this many days before a key expires, so a new key can be arranged in time.
 EXPIRY_WARNING_DAYS = 30
@@ -19,6 +22,12 @@ EXPIRY_WARNING_DAYS = 30
 # OpenPGP packet types that can hold the encrypted data of a file.
 CLASSIC_DATA_PACKET = 18  # CFB+MDC: every PGP program can decrypt it
 OCB_DATA_PACKET = 20  # GnuPG's OCB format: only GnuPG 2.3+ and a few others can decrypt it
+
+
+def encrypted_file_name(original_name: str, pattern: str = SBI_FILE_NAME) -> str:
+    """The encrypted file's name, from the original's and the naming pattern (see SBI_FILE_NAME)."""
+    name, ext = os.path.splitext(original_name)
+    return pattern.format(name=name, ext=ext)
 
 
 def uses_gnupg_only_format(gpg: gnupg.GPG, recipients: Iterable[str], cipher: str = "AES256") -> bool:
@@ -37,7 +46,8 @@ def uses_gnupg_only_format(gpg: gnupg.GPG, recipients: Iterable[str], cipher: st
 class Encryptor:
     """Encrypts files for a fixed list of recipients, optionally signing them with our own key.
 
-    The file format defaults to what SBI asked for: AES256, no compression, ASCII-armored.
+    The file format defaults to what SBI asked for: AES256, no compression, ASCII-armored, and the
+    encrypted file named like the original with its extension replaced by .pgp.txt.
     """
 
     action = "Encrypted"  # for the log: "Encrypted <file> to ..."
@@ -52,6 +62,7 @@ class Encryptor:
         cipher: str = "AES256",
         compression: str = "none",
         armor: bool = True,
+        file_name: str = SBI_FILE_NAME,
         allow_gnupg_only_format: bool = False,
     ):
         self._gpg = gpg
@@ -61,6 +72,7 @@ class Encryptor:
         self._cipher = cipher
         self._compression = compression
         self._armor = armor
+        self._file_name = file_name
         self._allow_gnupg_only_format = allow_gnupg_only_format
 
     def check_keys(self) -> None:
@@ -94,17 +106,18 @@ class Encryptor:
                 "to remove OCB from their key's preferences and send the public key again (see README)."
             )
         log.info(
-            "Files are %s, encrypted with %s%s, %s and %s",
+            "Files are %s, encrypted with %s%s, %s and %s, and named %s",
             "ASCII-armored" if self._armor else "binary",
             self._cipher,
             " in GnuPG's OCB mode" if ocb else "",
             "not compressed" if self._compression == "none" else f"compressed with {self._compression.upper()}",
             "signed" if self._signing_key else "not signed",
+            self._file_name.format(name="<name>", ext="<ext>"),
         )
 
     def output_name(self, source_name: str) -> str:
-        """The encrypted file's name: the original name with .pgp added."""
-        return source_name + ENCRYPTED_SUFFIX
+        """The encrypted file's name: SBI_X.txt becomes SBI_X.pgp.txt (see SBI_FILE_NAME)."""
+        return encrypted_file_name(source_name, self._file_name)
 
     def encrypt_file(self, source: Path, output: Path) -> None:
         """Encrypt source into output in the configured format."""

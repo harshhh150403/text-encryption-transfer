@@ -34,6 +34,7 @@ from pipeline.gpg import (
     key_expiry,
     key_problem,
     open_keyring,
+    remove_public_keys,
     stop_gpg_agent,
 )
 from pipeline.transfer import TransferError, transfer_file
@@ -151,7 +152,7 @@ class EncryptionTest(unittest.TestCase):
 
         sink_file = transfer_file(source, self.job, self.encryptor)
 
-        self.assertEqual(sink_file, self.job.output_dir / f"{SAMPLE_NAME}.pgp")
+        self.assertEqual(sink_file, self.job.output_dir / "SBI_SBIN55_20261014_0002.pgp.txt", "SBI asked for .txt at the end")
         self.assertFalse(source.exists())
         self.assertEqual((self.job.archive_dir / SAMPLE_NAME).read_bytes(), SAMPLE)
         encrypted = sink_file.read_bytes()
@@ -183,9 +184,16 @@ class EncryptionTest(unittest.TestCase):
         self.assertIn(f":compressed packet: algo={ZLIB}", self.packets(sink_file))
         self.assertEqual(self.decrypt(sink_file).data, SAMPLE)
 
+    def test_the_file_name_pattern_can_be_changed(self):
+        encryptor = Encryptor(self.pipeline_gpg, [self.recipient], file_name="{name}{ext}.pgp")
+
+        sink_file = transfer_file(self.add_source_file(), self.job, encryptor)
+
+        self.assertEqual(sink_file.name, "SBI_SBIN55_20261014_0002.txt.pgp")
+
     def test_never_overwrites_a_file_already_in_sink(self):
         source = self.add_source_file()
-        delivered = self.job.output_dir / f"{SAMPLE_NAME}.pgp"
+        delivered = self.job.output_dir / "SBI_SBIN55_20261014_0002.pgp.txt"
         delivered.write_bytes(b"delivered earlier")
 
         with self.assertRaises(TransferError):
@@ -225,7 +233,7 @@ class EncryptionTest(unittest.TestCase):
         self.assertEqual(failed, 0)
         self.assertEqual(
             sorted(path.name for path in self.job.output_dir.iterdir()),
-            ["SBI_SBIN55_20261014_0001.txt.pgp", "sbi_sbin55_20261014_0002.TXT.pgp"],
+            ["SBI_SBIN55_20261014_0001.pgp.txt", "sbi_sbin55_20261014_0002.pgp.txt"],
         )
         self.assertEqual(
             sorted(path.name for path in self.job.source_dir.iterdir() if path.is_file()),
@@ -305,6 +313,16 @@ class EncryptionTest(unittest.TestCase):
         importer = open_test_keyring(self.tmp / "importer", self.addCleanup)
         self.assertEqual(import_public_key(importer, both), sorted([self.recipient, other]))
 
+    def test_replacing_the_recipient_keys_keeps_our_own(self):
+        keyring = self.fresh_keyring()
+        keyring.import_keys(self.recipient_gpg.export_keys(self.recipient))
+        ours = make_key(keyring, "Ours")  # e.g. our signing key: it has a private part, so it stays
+
+        removed = remove_public_keys(keyring)
+
+        self.assertEqual([key["fingerprint"] for key in removed], [self.recipient])
+        self.assertEqual([key["fingerprint"] for key in keyring.list_keys()], [ours])
+
     def test_importing_a_private_key_is_refused(self):
         private_key_file = self.tmp / "private.asc"
         private_key_file.write_text(
@@ -338,7 +356,7 @@ class DecryptionTest(unittest.TestCase):
             source_dir=self.tmp / "Inbound",
             output_dir=self.tmp / "Decrypted",
             archive_dir=self.tmp / "Inbound" / "archive",
-            file_patterns=("*.pgp", "*.gpg", "*.asc"),
+            file_patterns=("*.pgp", "*.gpg", "*.asc", "*.pgp.txt"),
             stable_seconds=0,
             poll_seconds=0.1,
         )
@@ -382,6 +400,9 @@ class DecryptionTest(unittest.TestCase):
         self.assertEqual(name("SBI_0001.txt.pgp"), "SBI_0001.txt")
         self.assertEqual(name("SBI_0001.txt.GPG"), "SBI_0001.txt")
         self.assertEqual(name("SBI_0001.asc"), "SBI_0001")
+        self.assertEqual(name("SBI_0001.pgp.txt"), "SBI_0001.txt")  # SBI-style names with .txt at the end
+        self.assertEqual(name("SBI_0001.txt.pgp.txt"), "SBI_0001.txt")
+        self.assertEqual(name("SBI_0001.csv.pgp.txt"), "SBI_0001.csv")
         self.assertEqual(name("SBI_0001.txt"), "SBI_0001.txt")  # nothing to remove: it lands in another folder
 
     def test_refused_files_stay_where_they_are_and_leave_nothing_decrypted_behind(self):
@@ -436,6 +457,7 @@ class DecryptionTest(unittest.TestCase):
     def test_the_watcher_decrypts_matching_files_and_leaves_the_rest(self):
         self.sbi_sends("SBI_RESPONSE_0001.txt.pgp")
         self.sbi_sends("SBI_RESPONSE_0002.asc")
+        self.sbi_sends("SBI_RESPONSE_0004.pgp.txt")
         self.sbi_sends("._SBI_RESPONSE_0003.txt.pgp")  # hidden: e.g. left behind by macOS
         (self.job.source_dir / "readme.txt").write_text("not for the pipeline")
 
@@ -443,7 +465,8 @@ class DecryptionTest(unittest.TestCase):
 
         self.assertEqual(failed, 0)
         self.assertEqual(
-            sorted(path.name for path in self.job.output_dir.iterdir()), ["SBI_RESPONSE_0001.txt", "SBI_RESPONSE_0002"]
+            sorted(path.name for path in self.job.output_dir.iterdir()),
+            ["SBI_RESPONSE_0001.txt", "SBI_RESPONSE_0002", "SBI_RESPONSE_0004.txt"],
         )
         self.assertEqual(
             sorted(path.name for path in self.job.source_dir.iterdir() if path.is_file()),
@@ -503,8 +526,9 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.job.archive_dir, PROJECT_DIR / "Source" / "archive")
         self.assertEqual(settings.job.file_patterns, ("SBI_*.txt",))
         self.assertEqual(settings.recipients, ())
-        # What SBI asked for: AES256, no compression, ASCII-armored, no signature.
+        # What SBI asked for: AES256, no compression, ASCII-armored, no signature, .txt at the end.
         self.assertEqual((settings.cipher, settings.compression, settings.armor), ("AES256", "none", True))
+        self.assertEqual(settings.file_name, "{name}.pgp.txt")
         self.assertIsNone(settings.signing_key)
 
     def test_decryption_defaults(self):
@@ -513,7 +537,7 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.job.source_dir, PROJECT_DIR / "Inbound")
         self.assertEqual(settings.job.output_dir, PROJECT_DIR / "Decrypted")
         self.assertEqual(settings.job.archive_dir, PROJECT_DIR / "Inbound" / "archive")
-        self.assertEqual(settings.job.file_patterns, ("*.pgp", "*.gpg", "*.asc"))
+        self.assertEqual(settings.job.file_patterns, ("*.pgp", "*.gpg", "*.asc", "*.pgp.txt"))
         self.assertEqual(settings.gnupg_home, PROJECT_DIR / "gnupg_home_decrypt")
         self.assertIsNone(settings.passphrase)
 
@@ -548,6 +572,10 @@ class SettingsTest(unittest.TestCase):
             self.load(CIPHER_ALGO="3DES")
         with self.assertRaises(ConfigError):
             self.load(COMPRESSION="gzip")
+        self.assertEqual(self.load(ENCRYPTED_FILE_NAME="{name}{ext}.pgp").file_name, "{name}{ext}.pgp")
+        for invalid in ("fixed_name.pgp", "{nam}.pgp", "{name}/x.pgp", "{name.pgp"):
+            with self.subTest(invalid), self.assertRaises(ConfigError):
+                self.load(ENCRYPTED_FILE_NAME=invalid)
 
     def test_fingerprints_are_normalised(self):
         settings = self.load(RECIPIENT_FINGERPRINTS="abcd 1234 abcd 1234 abcd 1234 abcd 1234 abcd 1234, " + "F" * 40)

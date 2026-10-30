@@ -87,6 +87,7 @@ def run(settings: EncryptionSettings | DecryptionSettings, once: bool) -> int:
                 cipher=settings.cipher,
                 compression=settings.compression,
                 armor=settings.armor,
+                file_name=settings.file_name,
                 allow_gnupg_only_format=settings.allow_gnupg_only_format,
             )
             output_label = "Sink"

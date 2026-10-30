@@ -6,11 +6,11 @@ Two PGP pipelines for exchanging files with SBI. Each watches a folder and handl
 
 ```
 Source/SBI_SBIN55_20261014_0002.txt
-  ├─► Sink/SBI_SBIN55_20261014_0002.txt.pgp         encrypted with SBI's public key
+  ├─► Sink/SBI_SBIN55_20261014_0002.pgp.txt         encrypted with SBI's public key
   └─► Source/archive/SBI_SBIN55_20261014_0002.txt   the original, unencrypted
 ```
 
-This pipeline only ever holds SBI's **public** key. Only SBI's private key can decrypt the `.pgp` files, so nobody on our side can open them; our readable copy is the one in the archive.
+This pipeline only ever holds SBI's **public** key. Only SBI's private key can decrypt the encrypted files, so nobody on our side can open them; our readable copy is the one in the archive.
 
 **Decryption: files SBI sends us.** SBI encrypts its files with **our public key**. Files that arrive in `Inbound/` are decrypted with our private key into `Decrypted/`, and the encrypted original is moved to `Inbound/archive/`.
 
@@ -28,7 +28,7 @@ The two pipelines share the code but run separately: each has its own settings, 
 
 Both pipelines:
 
-- Pick up only files whose names match their pattern (`FILE_PATTERN`, default `SBI_*.txt`; `DECRYPT_FILE_PATTERN`, default `*.pgp, *.gpg, *.asc`). Everything else is ignored, including temporary names such as `.part` or `.tmp`, hidden files, and Office lock files.
+- Pick up only files whose names match their pattern (`FILE_PATTERN`, default `SBI_*.txt`; `DECRYPT_FILE_PATTERN`, default `*.pgp, *.gpg, *.asc, *.pgp.txt`). Everything else is ignored, including temporary names such as `.part` or `.tmp`, hidden files, and Office lock files.
 - Pick up a file once it hasn't changed for `STABLE_SECONDS` and, on Windows, no other program still has it open for writing. The safest setup is for whatever drops files in to write them under a temporary name and rename them when finished.
 - Write the new file as `<name>.part` and rename it when complete, so anything reading the output folder never sees half a file.
 - Never overwrite anything in the output folder or the archive. If a name is already taken, the file stays where it is and an error is logged.
@@ -38,12 +38,12 @@ Both pipelines:
 
 The encryption pipeline:
 
-- Encrypts as SBI specified: AES256, no compression, no signature, ASCII-armored. The `.pgp` file is therefore text starting with `-----BEGIN PGP MESSAGE-----`. Each of these can be changed in `.env` (`CIPHER_ALGO`, `COMPRESSION`, `SIGNING_KEY_FINGERPRINT`, `ARMOR`); the pipeline logs the format it uses at startup.
+- Encrypts as SBI specified: AES256, no compression, no signature, ASCII-armored, and named like the original with its `.txt` replaced by `.pgp.txt`. The encrypted file is therefore text starting with `-----BEGIN PGP MESSAGE-----`. Each of these can be changed in `.env` (`CIPHER_ALGO`, `COMPRESSION`, `SIGNING_KEY_FINGERPRINT`, `ARMOR`, `ENCRYPTED_FILE_NAME`); the pipeline logs the format it uses at startup.
 - At startup, refuses missing, expired or revoked keys, warns about keys expiring within 30 days, and refuses keys that would produce files only GnuPG can decrypt (see [SBI&#39;s key](#sbis-key-encryption)).
 
 The decryption pipeline:
 
-- Names the decrypted file like the encrypted one, without `.pgp`, `.gpg` or `.asc`. Armored and binary files both work.
+- Names the decrypted file like the encrypted one, without `.pgp`, `.gpg` or `.asc`, also when `.txt` follows: `SBI_X.pgp.txt` and `SBI_X.txt.pgp.txt` both become `SBI_X.txt`. Armored and binary files both work.
 - Only accepts files encrypted for our key. Files encrypted for another key, with a password, or not at all, and damaged files, are refused and stay in the inbound folder. Nothing partly decrypted is left behind.
 - At startup, checks that our private key is there and that `DECRYPT_KEY_PASSPHRASE` unlocks it.
 
@@ -111,7 +111,7 @@ Encrypt it, then decrypt it the way SBI will:
 
 ```
 python main.py --once
-python scripts/decrypt_file.py Sink/SBI_SBIN55_20261014_0002.txt.pgp
+python scripts/decrypt_file.py Sink/SBI_SBIN55_20261014_0002.pgp.txt
 ```
 
 The last command also checks the decrypted file against the original in the archive.
@@ -120,13 +120,13 @@ To run the same test again, delete the encrypted file and the archived original,
 
 ```bat
 :: Windows
-del Sink\SBI_SBIN55_20261014_0002.txt.pgp Source\archive\SBI_SBIN55_20261014_0002.txt
+del Sink\SBI_SBIN55_20261014_0002.pgp.txt Source\archive\SBI_SBIN55_20261014_0002.txt
 copy samples\SBI_SBIN55_20261014_0002.txt Source\
 ```
 
 ```bash
 # macOS
-rm Sink/SBI_SBIN55_20261014_0002.txt.pgp Source/archive/SBI_SBIN55_20261014_0002.txt
+rm Sink/SBI_SBIN55_20261014_0002.pgp.txt Source/archive/SBI_SBIN55_20261014_0002.txt
 cp samples/SBI_SBIN55_20261014_0002.txt Source/
 ```
 
@@ -135,21 +135,29 @@ cp samples/SBI_SBIN55_20261014_0002.txt Source/
 SBI sends us its **public** key and keeps the private key. Import it with:
 
 ```
-python scripts/import_public_key.py "SBI Public Key/uat_NextGen_SBI_public.asc (1).txt"
+python scripts/import_public_key.py "SBI Public Key/uat_NextGen_SBI_public_noaead (1).asc"
 ```
 
 The quotes are needed because the file name contains spaces. The script lists every key in the file, with its fingerprint and expiry date, and whether it can be used. It refuses any file that contains a private key.
 
 Then:
 
-1. **Pick one key.** A file can hold several keys; SBI's UAT file holds four. Ask SBI which one to use.
+1. **Pick one key.** A file can hold several keys; SBI's UAT file holds three. Ask SBI which one to use.
 2. **Confirm its fingerprint with SBI by phone,** so you know nobody swapped the key on the way.
 3. **Set it in `.env`:** `RECIPIENT_FINGERPRINTS=<that fingerprint>`.
 4. **Watch the expiry date.** The pipeline warns 30 days before the key expires, and stops encrypting once it has.
 
+**When SBI sends updated or new keys,** import the new file with `--replace`. It checks the new file first, then removes the SBI keys already in the keyring and imports the new ones:
+
+```
+python scripts/import_public_key.py --replace "SBI Public Key/<new file>"
+```
+
+Then check `RECIPIENT_FINGERPRINTS` (a key keeps its fingerprint when only its preferences change) and restart the encryption pipeline, which reads its keys only at startup.
+
 ### Keys that ask for OCB
 
-Keys created by recent GnuPG or Kleopatra versions, SBI's UAT keys among them, ask gpg to encrypt in its newer OCB format. gpg then always does, whatever options it's given. GnuPG 2.3+ and Kleopatra can decrypt OCB files, but many other PGP programs can't, so the pipeline refuses such a key at startup. There are two ways forward:
+Keys created by recent GnuPG or Kleopatra versions, SBI's UAT keys among them, ask gpg to encrypt in its newer OCB format. gpg then always does, whatever options it's given. GnuPG 2.3+ and Kleopatra can decrypt OCB files, but many other PGP programs can't, so the pipeline refuses such a key at startup. SBI's first UAT keys did this; its updated keys (`uat_NextGen_SBI_public_noaead`) don't. If a key asks for OCB, there are two ways forward:
 
 - **SBI confirms that its software decrypts OCB,** for example by decrypting a UAT test file. Then set `ALLOW_GNUPG_ONLY_FORMAT=true` in `.env`.
 - **SBI removes OCB from its key's preferences** and sends us the public key again. Files then use the classic format that every PGP program reads. In GnuPG, the key's owner runs `gpg --edit-key <fingerprint>`, then `setpref AES256 AES192 AES SHA512 SHA384 SHA256 Uncompressed ZLIB ZIP`, answers `y`, and enters `save`. This changes only the key's preferences: the key and its fingerprint stay the same. We then import the re-sent public key with the import script as before.

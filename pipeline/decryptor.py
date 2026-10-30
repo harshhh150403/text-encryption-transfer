@@ -14,6 +14,19 @@ log = logging.getLogger(__name__)
 # Extensions an encrypted file may have. The decrypted file gets the same name without it.
 ENCRYPTED_EXTENSIONS = (".pgp", ".gpg", ".asc")
 
+
+def decrypted_file_name(encrypted_name: str) -> str:
+    """The decrypted file's name: the encrypted file's name without .pgp, .gpg or .asc.
+
+    SBI-style names with .txt at the end are understood both ways: SBI_X.pgp.txt and SBI_X.txt.pgp.txt
+    both become SBI_X.txt.
+    """
+    stem, extension = os.path.splitext(encrypted_name)
+    if extension.lower() == ".txt" and os.path.splitext(stem)[1].lower() in ENCRYPTED_EXTENSIONS:
+        stem = os.path.splitext(stem)[0]  # SBI_X, or SBI_X.txt
+        return stem if os.path.splitext(stem)[1] else stem + ".txt"
+    return stem if stem and extension.lower() in ENCRYPTED_EXTENSIONS else encrypted_name
+
 # libgpg-error's code for a wrong passphrase. gpg reports errors in status lines such as
 # "[GNUPG:] ERROR pkdecrypt_failed 67108875": the low 16 bits are the code (11), the rest says which
 # part of GnuPG reported it. Unlike gpg's messages, these lines are never translated.
@@ -56,9 +69,8 @@ class Decryptor:
             )
 
     def output_name(self, source_name: str) -> str:
-        """The decrypted file's name: the encrypted file's name without .pgp, .gpg or .asc."""
-        stem, extension = os.path.splitext(source_name)
-        return stem if stem and extension.lower() in ENCRYPTED_EXTENSIONS else source_name
+        """The decrypted file's name (see decrypted_file_name)."""
+        return decrypted_file_name(source_name)
 
     def decrypt_file(self, source: Path, output: Path) -> None:
         """Decrypt source into output. Anything gpg wrote to output before failing is left to the caller."""

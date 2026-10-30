@@ -1,6 +1,10 @@
 """Import a recipient's public key (for example SBI's) into the pipeline's keyring.
 
     python scripts/import_public_key.py path/to/sbi_public_key.asc
+    python scripts/import_public_key.py --replace path/to/sbi_public_key.asc
+
+With --replace, the recipient keys already in the keyring are removed first, for example when SBI
+sends updated or new keys. The new file is checked before anything is removed.
 
 The file may hold several keys; each is listed with whether it can be used. Before using a key,
 confirm its fingerprint with the recipient over a separate channel, such as a phone call, then put
@@ -16,17 +20,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so the pipeli
 
 from pipeline.config import ConfigError, load_encryption_settings
 from pipeline.encryptor import EXPIRY_WARNING_DAYS, uses_gnupg_only_format
-from pipeline.gpg import PgpError, import_public_key, key_expiry, key_problem, open_keyring
+from pipeline.gpg import (
+    PgpError,
+    check_public_key_file,
+    describe_key,
+    import_public_key,
+    key_expiry,
+    key_problem,
+    open_keyring,
+    remove_public_keys,
+)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Import a recipient's public key into the pipeline's keyring.")
     parser.add_argument("key_file", type=Path, help="the public key file (.asc, .gpg, .pgp or .txt)")
+    parser.add_argument(
+        "--replace", action="store_true",
+        help="first remove the recipient keys already in the keyring (for example when SBI sends updated keys)",
+    )
     args = parser.parse_args()
 
     try:
         settings = load_encryption_settings()
         gpg = open_keyring(settings.gnupg_home, settings.gpg_binary)
+        if args.replace:
+            check_public_key_file(gpg, args.key_file)  # before anything is removed
+            removed = remove_public_keys(gpg)
+            if removed:
+                print(f"Removed the {len(removed)} key{'s' if len(removed) != 1 else ''} that were in the keyring:")
+                for key in removed:
+                    print(f"  {describe_key(key)}")
+            else:
+                print("There were no keys in the keyring to remove.")
+            print()
         keys = gpg.list_keys(keys=import_public_key(gpg, args.key_file))
         print(f"Imported {len(keys)} key{'s' if len(keys) != 1 else ''} from {args.key_file.name}:")
         usable, ocb = [], False

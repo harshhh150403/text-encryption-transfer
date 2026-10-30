@@ -49,11 +49,10 @@ def stop_gpg_agent(gnupg_home: Path, gpg_binary: str = "gpg") -> None:
         pass
 
 
-def import_public_key(gpg: gnupg.GPG, key_file: Path) -> list[str]:
-    """Import the public key(s) in key_file and return their fingerprints.
+def check_public_key_file(gpg: gnupg.GPG, key_file: Path) -> None:
+    """Raise unless key_file holds public keys only.
 
-    Refuses a file that contains a private key: the encryption pipeline only ever needs the
-    recipient's public key.
+    A private key is refused: the encryption pipeline only ever needs the recipient's public key.
     """
     if not key_file.is_file():
         raise PgpError(f"Key file not found: {key_file}")
@@ -65,10 +64,29 @@ def import_public_key(gpg: gnupg.GPG, key_file: Path) -> list[str]:
             f"{key_file} contains a PRIVATE key, which must never be stored with the encryption pipeline. "
             "Export only the public key and import that instead."
         )
+
+
+def import_public_key(gpg: gnupg.GPG, key_file: Path) -> list[str]:
+    """Import the public key(s) in key_file (see check_public_key_file) and return their fingerprints."""
+    check_public_key_file(gpg, key_file)
     result = gpg.import_keys_file(str(key_file))
     if not result.fingerprints:
         raise PgpError(f"Could not import {key_file}: {gpg_messages(result.stderr)}")
     return sorted(set(result.fingerprints))
+
+
+def remove_public_keys(gpg: gnupg.GPG) -> list[dict]:
+    """Remove the public keys that have no private key in this keyring, such as SBI's, and return them.
+
+    Our own keys (a signing key, if signing is used) are kept.
+    """
+    ours = {key["fingerprint"] for key in gpg.list_keys(secret=True)}
+    removed = [key for key in gpg.list_keys() if key["fingerprint"] not in ours]
+    if removed:
+        result = gpg.delete_keys([key["fingerprint"] for key in removed])
+        if str(result) != "ok":
+            raise PgpError(f"Could not remove the old keys: {result} ({gpg_messages(result.stderr)})")
+    return removed
 
 
 def create_key_pair(

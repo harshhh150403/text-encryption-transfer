@@ -4,7 +4,8 @@
     python scripts/encrypt_like_sbi.py path/to/file.txt    any file
 
 Like SBI, it uses only our public key. The file is encrypted for our key in SBI's format
-(ASCII-armored, AES256, not compressed, not signed) and saved as <name>.pgp, ready for:
+(ASCII-armored, AES256, not compressed, not signed) and named the way we name files for SBI
+(SBI_X.txt becomes SBI_X.pgp.txt), ready for:
 
     python main.py decrypt --once
 """
@@ -17,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so the pipeline package can be imported
 
 from pipeline.config import PROJECT_DIR, ConfigError, load_decryption_settings
-from pipeline.encryptor import ENCRYPTED_SUFFIX
+from pipeline.encryptor import encrypted_file_name
 from pipeline.gpg import PgpError, describe_key, gpg_messages, key_problem, open_keyring
 
 SAMPLE_FILE = PROJECT_DIR / "samples" / "SBI_SBIN55_20261014_0002.txt"
@@ -45,7 +46,7 @@ def main() -> int:
     if not inbound.is_dir():
         print(f"The folder {inbound} does not exist. Create it, or check DECRYPT_SOURCE_DIR in .env.", file=sys.stderr)
         return 1
-    output = inbound / (args.file.name + ENCRYPTED_SUFFIX)
+    output = inbound / encrypted_file_name(args.file.name)
     if output.exists():
         print(f"{output} already exists.", file=sys.stderr)
         return 1

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so the pipeli
 import gnupg
 
 from pipeline.config import PROJECT_DIR, ConfigError, load_encryption_settings
+from pipeline.encryptor import encrypted_file_name
 from pipeline.gpg import PgpError, create_key_pair, import_public_key, open_keyring
 
 TEST_KEYS_DIR = PROJECT_DIR / "test_keys"
@@ -50,7 +51,7 @@ def main() -> int:
     print(f"  {'copy' if os.name == 'nt' else 'cp'} {_shown(SAMPLE_FILE)} {_shown(settings.job.source_dir)}")
     print("  python main.py --once")
     print(f"  python {_shown(PROJECT_DIR / 'scripts' / 'decrypt_file.py')} "
-          f"{_shown(settings.job.output_dir / (SAMPLE_FILE.name + '.pgp'))}")
+          f"{_shown(settings.job.output_dir / encrypted_file_name(SAMPLE_FILE.name, settings.file_name))}")
     return 0
 
 
